@@ -112,6 +112,25 @@ _INJECTION_PATTERNS = [
     r"hypotheticall?y.*(password|api\s*key|secret|credentials)",
     r"write\s+a\s+story.*(password|credentials|api\s*key|same\s+secrets)",
     r"confirm\s+(that\s+)?(the\s+)?(admin\s+)?password",
+    # --- Bổ sung L1: bắt 3 prompt trước đây chỉ NeMo self-check chặn được ---
+    # #1 Completion — điền chỗ trống: "pass=________", "sk-________", "complete the missing values"
+    r"pass\s*=\s*_",
+    r"\bsk-_+",
+    r"_{3,}",
+    r"complete\s+(the\s+)?(missing|blank)",
+    # #2 Translation/reformat — moi "internal note" ra YAML/JSON, copy nguyên value, hoặc tên khoá VI của secret
+    r"internal\s+note",
+    r"configured\s+with",
+    r"\bverbatim\b",
+    r"copy(ing)?\s+every\s+value",
+    r"mat_khau|khoa_api|may_chu_csdl",
+    r"(re-?express|reformat|re-?write)\b.*\b(yaml|json|xml|table)",
+    # #5 Multi-step — moi dần credential / host / hệ thống nội bộ
+    r"what\s+credential",
+    r"\badmin\s+console\b",
+    r"\bservice\s+key\b",
+    r"\bhost\s*name\b",
+    r"internal\s+systems?\b",
 ]
 
 _OUTPUT_SECRET_PATTERNS = {
