@@ -67,15 +67,41 @@ def _red_default():
     return _STATE["red"]
 
 
-def _red_advance():
-    if "red_advance" not in _STATE:
-        from agents.guards_agent import create_red_agent_advance
+def _red_advance(nemo_on: bool = True):
+    """Red Advance. nemo_on=False → chỉ còn lớp regex (dùng plugin regex-only có sẵn
+    trong guards_agent), bỏ NeMo rails — để minh hoạ hệ thống yếu đi thế nào."""
+    key = "red_advance_on" if nemo_on else "red_advance_off"
+    if key not in _STATE:
+        if nemo_on:
+            from agents.guards_agent import create_red_agent_advance
 
-        _STATE["red_advance"] = create_red_agent_advance()
-    return _STATE["red_advance"]
+            _STATE[key] = create_red_agent_advance()
+        else:
+            from core.config import get_red_model, red_uses_openai_sdk
+
+            if not red_uses_openai_sdk():
+                raise RuntimeError(
+                    "Tắt NeMo trong demo hiện chỉ hỗ trợ RED_TEAM_PROVIDER=openai."
+                )
+            from agents.guards_agent import (
+                RED_ADVANCE_INSTRUCTION,
+                GuardsInputPlugin,
+                GuardsOutputPlugin,
+            )
+            from core.openai_runtime import create_openai_pair
+
+            _STATE[key] = create_openai_pair(
+                name="red_advance_no_nemo",
+                instruction=RED_ADVANCE_INSTRUCTION,
+                app_name="red_advance_no_nemo",
+                plugins=[GuardsInputPlugin(), GuardsOutputPlugin()],
+                model=get_red_model(),
+            )
+            print("[demo] Red Advance — NeMo ĐÃ TẮT (chỉ còn regex L1/L3)")
+    return _STATE[key]
 
 
-async def _ask(target: str, message: str) -> dict:
+async def _ask(target: str, message: str, nemo_on: bool = True) -> dict:
     from attacks.attacks import classify_attack_outcome, response_leaked_secrets
     from core.utils import chat_with_agent
 
@@ -93,21 +119,26 @@ async def _ask(target: str, message: str) -> dict:
         }
 
     name = "red_default" if target == "red" else "red_advance"
-    agent, runner = _red_default() if target == "red" else _red_advance()
+    if target == "red":
+        agent, runner = _red_default()
+    else:
+        agent, runner = _red_advance(nemo_on)
     import time
 
     t0 = time.perf_counter()
     response, _ = await chat_with_agent(agent, runner, message)
     latency = round((time.perf_counter() - t0) * 1000, 1)
     outcome = classify_attack_outcome(message, response, target_name=name)
+    label = "Red" if target == "red" else ("Red Advance" if nemo_on else "Red Advance (NeMo TẮT)")
     return {
-        "target": "Red" if target == "red" else "Red Advance",
+        "target": label,
         "blocked": outcome["blocked"],
         "layer": outcome["layer"],
         "blocked_at": outcome["blocked_at"],
         "leaked": outcome["leaked"],
         "response": response,
         "latency_ms": latency,
+        "nemo_on": nemo_on if target == "red_advance" else None,
     }
 
 
@@ -167,6 +198,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             target = (payload.get("target") or "blue").strip()
             message = payload.get("message") or ""
+            nemo_on = bool(payload.get("nemo", True))
             if target not in {"blue", "red", "red_advance"}:
                 raise ValueError("target phải là blue | red | red_advance")
         except Exception as exc:
@@ -174,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
 
         with _LOCK:  # tuần tự hoá: Blue suy ra lớp chặn bằng bộ đếm plugin
             try:
-                result = asyncio.run(_ask(target, message))
+                result = asyncio.run(_ask(target, message, nemo_on))
                 result["ok"] = True
             except Exception as exc:
                 result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

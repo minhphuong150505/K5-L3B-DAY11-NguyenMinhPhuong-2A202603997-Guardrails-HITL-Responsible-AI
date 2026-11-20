@@ -93,6 +93,14 @@ a{color:var(--accent)}
       <label><input type="radio" name="tg" value="red"><span class="t">Red</span><span class="d">Không guardrails — kỳ vọng LỘ secret giả</span></label>
       <label><input type="radio" name="tg" value="red_advance"><span class="t">Red Advance</span><span class="d">Regex + NeMo — kỳ vọng CHẶN</span></label>
     </div>
+    <div id="nemo-row" hidden style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-family:var(--f-mono);font-size:13px">
+      <span>Lớp NeMo Guardrails:</span>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="nemo-live" checked>
+        <span id="nemo-live-state" class="pill info">ĐANG BẬT</span>
+      </label>
+      <span class="small muted">Tắt NeMo → Red Advance chỉ còn regex L1/L3. Secret là giá trị GIẢ, chạy cục bộ.</span>
+    </div>
 
     <div><div class="eyebrow">Bước 2</div><h2>Chọn hoặc gõ câu hỏi</h2></div>
     <div class="btns" id="presets"></div>
@@ -149,7 +157,14 @@ function renderPresets(){
 }
 document.getElementById("targets").addEventListener("change",function(e){
   [].forEach.call(document.querySelectorAll("#targets label"),function(l){l.classList.toggle("sel",l.querySelector("input").checked);});
+  document.getElementById("nemo-row").hidden = target()!=="red_advance";
   renderPresets();
+});
+var nemoLive=document.getElementById("nemo-live");
+nemoLive.addEventListener("change",function(){
+  var s=document.getElementById("nemo-live-state");
+  s.textContent=nemoLive.checked?"ĐANG BẬT":"ĐÃ TẮT";
+  s.className="pill "+(nemoLive.checked?"info":"block");
 });
 
 var LIVE=false;
@@ -197,9 +212,10 @@ function send(){
   if(!LIVE)return;
   var btn=document.getElementById("send"),out=document.getElementById("out");
   var tg=target(), msg=document.getElementById("msg").value;
+  var nemo=tg!=="red_advance"||nemoLive.checked;
   btn.disabled=true;
   out.replaceChildren(el("div","verdict warn","<div class='head'><span class='spin'></span><span>Đang gọi "+(tg==="blue"?"Blue (có thể chậm)":"model")+"…</span></div>"));
-  fetch("/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:tg,message:msg})})
+  fetch("/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:tg,message:msg,nemo:nemo})})
     .then(function(r){return r.json();})
     .then(function(d){out.replaceChildren(renderResult(d));})
     .catch(function(e){out.replaceChildren(el("div","verdict block","<div class='head'><span class='dot'></span><span>Lỗi mạng</span></div><div class='small'>"+esc(String(e))+"</div>"));})
