@@ -27,6 +27,36 @@ from core.utils import chat_with_agent
 # - "redacted": cleaned response (PII replaced with [REDACTED])
 # ============================================================
 
+# Thứ tự quan trọng: secret cụ thể trước, PII chung sau (để issue gọi đúng tên)
+PII_PATTERNS: dict[str, str] = {
+    "api_key": r"\bsk-[A-Za-z0-9_-]{6,}",
+    "password": r"\b(?:password|passwd|pwd|m[aậ]t\s*kh[aẩ]u)\b\s*(?:is|l[aà]|[:=])\s*[\"'`]?[^\s,;\"'`]+",
+    "admin_password_literal": r"\badmin123\b",
+    "internal_host": r"\b[\w-]+(?:\.[\w-]+)*\.internal(?::\d{2,5})?\b",
+    "email": r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b",
+    "vn_phone": r"(?<!\d)(?:\+84|84|0)(?:[\s.-]?\d){9,10}(?!\d)",
+    "national_id": r"(?<!\d)(?<!\d[.,])(?:\d{12}|\d{9})(?!\d|[.,]\d|%)",
+}
+
+# Secret thật nạp từ data/protected/vinbank_secrets.json — bắt cả bản bị chèn ký tự
+# (ví dụ "a-d-m-i-n-1-2-3", "sk vinbank secret 2024").
+try:
+    from core.config import DEMO_SECRETS as _DEMO_SECRETS
+except Exception:  # pragma: no cover
+    _DEMO_SECRETS = []
+
+
+def _squash(text: str) -> str:
+    import unicodedata
+
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", text or "").casefold())
+
+
+def obfuscated_secret_present(text: str) -> bool:
+    squashed = _squash(text)
+    return any(_squash(s) and _squash(s) in squashed for s in _DEMO_SECRETS)
+
+
 def content_filter(response: str) -> dict:
     """Filter response for PII, secrets, and harmful content.
 
@@ -37,23 +67,20 @@ def content_filter(response: str) -> dict:
         dict with 'safe', 'issues', and 'redacted' keys
     """
     issues = []
-    redacted = response
-
-    # PII patterns to check
-    PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
-    }
+    redacted = response or ""
 
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Lớp cuối: secret còn sót dưới dạng che giấu → không redact được từng phần, chặn cả câu
+    if obfuscated_secret_present(redacted):
+        issues.append("obfuscated_secret: 1 found")
+        redacted = (
+            "[REDACTED] — response withheld because it contained internal VinBank data."
+        )
 
     return {
         "safe": len(issues) == 0,
@@ -149,6 +176,7 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         self.blocked_count = 0
         self.redacted_count = 0
         self.total_count = 0
+        self.last_issues: list[str] = []
 
     def _extract_text(self, llm_response) -> str:
         """Extract text from LLM response."""
@@ -172,16 +200,29 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        self.last_issues = []
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            self.last_issues = result["issues"]
+            llm_response.content = types.Content(
+                role="model", parts=[types.Part.from_text(text=result["redacted"])]
+            )
+            response_text = result["redacted"]
 
-        return llm_response  # TODO: modify if needed
+        if self.use_llm_judge:
+            verdict = await llm_safety_check(response_text)
+            if not verdict["safe"]:
+                self.blocked_count += 1
+                self.last_issues.append(f"llm_judge: {verdict['verdict'][:80]}")
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="I'm sorry, I can't share that. How else can I help with your VinBank account?"
+                    )],
+                )
+
+        return llm_response
 
 
 # ============================================================

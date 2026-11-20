@@ -62,7 +62,11 @@ class OpenAIRunner:
             return block_msg
 
         client = self._client()
-        completion = client.chat.completions.create(
+        import asyncio
+
+        # chạy HTTP call trong thread để không chặn event loop (cho phép request song song)
+        completion = await asyncio.to_thread(
+            client.chat.completions.create,
             model=self.model,
             messages=[
                 {"role": "system", "content": agent.instruction},
